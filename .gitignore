@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# uv / venv
+.venv/
+venv/
+.python-version
+
+# Whisper / model caches if dropped in-repo
+models/
+*.bin
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.local
+
+# Internal design doc — kept out of public repo
+SPEC.md
+
+# Claude Code project state (never commit)
+.claude/
