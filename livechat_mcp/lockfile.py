@@ -27,6 +27,12 @@ from typing import Optional
 
 _IS_WINDOWS = sys.platform == "win32"
 
+# On Windows, msvcrt.locking is a *mandatory* byte-range lock — it blocks
+# reads on the locked byte as well as writes. We lock at a sentinel offset
+# well past where we ever write the PID so other processes can still read
+# the PID at offset 0.
+_WIN_LOCK_OFFSET = 1024
+
 if _IS_WINDOWS:
     import msvcrt
 else:
@@ -39,13 +45,13 @@ def _try_lock_fd(fd: int) -> bool:
     """Non-blocking exclusive lock on `fd`. Returns True on acquire, False on conflict."""
     if _IS_WINDOWS:
         try:
-            # Lock 1 byte at offset 0; non-blocking via LK_NBLCK.
+            os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
-        except OSError as e:
-            if e.errno in (errno.EACCES, errno.EDEADLK):
-                return False
-            raise
+        except OSError:
+            # Either the lock is held by another fd or the OS refused for
+            # another reason. Treat as conflict; caller decides how to react.
+            return False
     else:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -59,8 +65,7 @@ def _try_lock_fd(fd: int) -> bool:
 def _unlock_fd(fd: int) -> None:
     if _IS_WINDOWS:
         try:
-            # Seek to start before unlocking (we locked 1 byte at offset 0).
-            os.lseek(fd, 0, os.SEEK_SET)
+            os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         except OSError:
             pass
@@ -119,20 +124,8 @@ class SessionLock:
         """
         if self._fd is not None:
             return None
-        # On Windows, opening with O_RDWR | O_CREAT and then locking byte 0
-        # works the same as POSIX as long as the file has at least one byte.
-        # We pad below if needed so msvcrt.locking has a byte to lock.
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            # Ensure there is at least 1 byte so the Windows byte-range lock works.
-            try:
-                size = os.fstat(fd).st_size
-            except OSError:
-                size = 0
-            if size == 0:
-                os.write(fd, b"\n")
-                os.lseek(fd, 0, os.SEEK_SET)
-
             acquired = _try_lock_fd(fd)
         except OSError:
             os.close(fd)
@@ -143,12 +136,12 @@ class SessionLock:
             os.close(fd)
             return holder if holder > 0 else -1
 
-        # Truncate and write our PID so other processes can name us on conflict.
+        # Write our PID at offset 0 so other processes can identify us on conflict.
+        # Truncating may fail on Windows while the lock is held in some configs;
+        # ignore that and overwrite — _read_pid only reads the first line.
         try:
             os.ftruncate(fd, 0)
         except OSError:
-            # Some Windows configurations fail ftruncate while a region is locked;
-            # fall back to overwriting the existing bytes from offset 0.
             pass
         os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, f"{os.getpid()}\n".encode())
@@ -172,7 +165,11 @@ class SessionLock:
 def _read_pid(path: Path) -> int:
     try:
         with open(path) as f:
-            return int(f.read().strip() or 0)
+            # Only the first line — when ftruncate is rejected (Windows can
+            # refuse it under an active lock), the file may still contain
+            # bytes from a previous holder past our newly written PID.
+            first = f.readline().strip()
+        return int(first or 0)
     except (OSError, ValueError):
         return 0
 
