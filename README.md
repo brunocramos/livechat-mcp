@@ -62,11 +62,17 @@ wizard into `~/.local/bin`, and launches the interactive setup wizard.
 If you've already cloned the repo manually, run `./install.sh` (or
 `.\install.ps1`) directly and skip the curl step.
 
-> **One-time microphone prompt.** The first time you run `/livechat`, your
-> OS will ask your terminal app for mic access (macOS: a System Settings
-> dialog; Windows: the Privacy & Security panel; Linux: usually nothing if
-> your user is in the `audio` group). Grant it once and it just works from
-> there on — every subsequent session is hot the moment you say go.
+> **First-run permissions.** Two prompts to expect, both one-time:
+>
+> - **OS mic access**, the first time `/livechat` opens the microphone
+>   (macOS: a System Settings dialog; Windows: the Privacy & Security
+>   panel; Linux: usually nothing if your user is in the `audio` group).
+> - **MCP tool approvals** from your assistant CLI — Claude Code / Codex /
+>   Gemini will ask once per tool the first time it's invoked
+>   (`get_voice_input`, `end_voice_session`, `reset_voice_session`,
+>   `take_over_voice_session`). Approve "always" and they won't ask again.
+>
+> After both, every subsequent session is hot the moment you say go.
 
 > **Windows**: native locking uses `msvcrt` and takeover signaling is
 > file-based, so no `fcntl` dependency. The interactive wizard is a bash
