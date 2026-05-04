@@ -14,22 +14,49 @@ Works with any MCP host. First-class support for:
 
 ## Requirements
 
-- macOS (tested) — Linux likely works, Windows untested.
+- **macOS**, **Linux**, or **Windows** (native via PowerShell, or under WSL2 / Git Bash).
 - Python 3.10+
 - An MCP host installed (Claude Code, Codex, Gemini, etc.)
 - A working microphone
 - ~500 MB disk for Whisper model cache + dependencies
 - [`uv`](https://docs.astral.sh/uv/) for project management (recommended)
 
-## Setup (macOS)
+## Quick install (recommended)
+
+From a clone of the repo:
+
+```bash
+# macOS / Linux / Git Bash on Windows
+./install.sh
+```
+
+```powershell
+# Native Windows PowerShell
+.\install.ps1
+```
+
+The bootstrap detects the OS, installs portaudio if needed (brew / apt / dnf /
+pacman / zypper — Windows wheels ship it bundled), installs `uv` if missing,
+runs `uv sync`, drops the wizard into `~/.local/bin`, and launches the
+interactive setup wizard.
+
+> **Windows**: native locking uses `msvcrt` and takeover signaling is
+> file-based, so no `fcntl` dependency. The interactive wizard is a bash
+> script — `install.ps1` invokes it through Git Bash, which it offers to
+> install via `winget` if missing.
+
+## Manual setup
+
+If you'd rather install step-by-step, here's what `install.sh` does:
 
 ### 1. Install portaudio
 
 `sounddevice` needs portaudio.
 
-```bash
-brew install portaudio
-```
+- **macOS**: `brew install portaudio`
+- **Debian/Ubuntu**: `sudo apt-get install libportaudio2 portaudio19-dev`
+- **Fedora/RHEL**: `sudo dnf install portaudio portaudio-devel`
+- **Arch**: `sudo pacman -S portaudio`
 
 ### 2. Install `uv` if you don't have it
 
@@ -49,19 +76,18 @@ This will create `.venv/` and install `mcp`, `faster-whisper`, `sounddevice`,
 
 ### 4. Run the setup wizard
 
-The fastest way to install for one or more hosts is the included wizard:
-
 ```bash
-install -m 0755 bin/livechat-skill ~/.local/bin/livechat-skill
-livechat-skill setup
+install -m 0755 bin/livechat-mcp ~/.local/bin/livechat-mcp
+livechat-mcp setup
 ```
 
 The wizard will:
 
 1. Ask which assistants to install for (Claude Code / Codex / Gemini, any combination).
-2. Copy the `/livechat` and `/endlivechat` slash commands to each host's
-   commands directory (in the right format — Markdown for Claude Code & Codex,
-   TOML for Gemini).
+2. Copy the `/livechat` and `/endlivechat` slash commands to hosts that support
+   custom slash commands. For Codex, it installs both legacy prompt files and a
+   `livechat` skill, because current Codex CLI releases do not expose custom
+   prompts as `/livechat`.
 3. Register the MCP server in each host's config file.
 4. Walk you through the tunable env vars (silence threshold, Whisper model,
    etc.) — press Enter to keep defaults.
@@ -74,14 +100,20 @@ below.
 
 ### 5. Grant microphone permission
 
-The first time the server tries to capture audio, macOS will prompt your
-**terminal app** (Terminal, iTerm, Ghostty, Warp, etc.) for mic access. If
-you miss the prompt, enable it manually:
+- **macOS**: the first time the server tries to capture audio, macOS will
+  prompt your **terminal app** (Terminal, iTerm, Ghostty, Warp, etc.) for
+  mic access. If you miss the prompt, enable it manually:
 
-> System Settings → Privacy & Security → Microphone → enable for your terminal
+  > System Settings → Privacy & Security → Microphone → enable for your terminal
 
-If you skip this, audio capture silently returns silence and nothing will
-ever transcribe.
+  If you skip this, audio capture silently returns silence and nothing will
+  ever transcribe.
+
+- **Windows**: Settings → Privacy & security → Microphone → allow desktop apps
+  to access the microphone (and ensure your terminal is permitted).
+
+- **Linux**: usually no prompt — just make sure your user has the right ALSA
+  / PulseAudio / Pipewire access (typically the `audio` group).
 
 ### 6. Pre-download the Whisper model (optional)
 
@@ -91,7 +123,7 @@ The first run downloads `base.en` (~150 MB). You can pre-warm it:
 uv run python -c "from faster_whisper import WhisperModel; WhisperModel('base.en', device='cpu', compute_type='int8')"
 ```
 
-## Manual install (skip if you used `livechat-skill setup`)
+## Manual install (skip if you used `livechat-mcp setup`)
 
 ### Claude Code
 
@@ -124,9 +156,11 @@ Or edit `~/.claude.json` directly:
 
 ### Codex CLI
 
-Copy the slash commands:
+Install the Codex skill and legacy prompt files:
 
 ```bash
+mkdir -p ~/.codex/skills/livechat
+cp skills/livechat/SKILL.md ~/.codex/skills/livechat/
 mkdir -p ~/.codex/prompts
 cp commands/livechat.md ~/.codex/prompts/
 cp commands/endlivechat.md ~/.codex/prompts/
@@ -144,7 +178,7 @@ args = ["--directory", "/absolute/path/to/livechat-mcp", "run", "livechat-mcp"]
 
 Gemini uses TOML for custom commands. The wizard generates these for you;
 to do it by hand, see `commands/gemini/livechat.toml.template` (created by
-running `livechat-skill setup` once).
+running `livechat-mcp setup` once).
 
 Register the MCP server in `~/.gemini/settings.json`:
 
@@ -170,8 +204,18 @@ claude    # or: codex    or: gemini
 Then in the assistant prompt:
 
 ```
-/livechat
+/livechat            # Claude Code, Gemini CLI
+use livechat         # Codex CLI
 ```
+
+> **Codex restart required.** Codex only loads skills and MCP servers at
+> startup. If you ran the wizard while Codex was open, quit and relaunch before
+> using `use livechat`.
+
+Codex 0.128.0 does not support user-defined `/livechat` slash commands; `/` is
+currently reserved for Codex's built-in commands. The setup installs a
+discoverable `livechat` skill instead, so you can type `use livechat` or open
+`/skills` and pick `livechat`.
 
 The assistant will call `get_voice_input` and start listening. **Speak
 normally.** When you pause for ~1.5 seconds, your utterance is finalized,
@@ -200,7 +244,8 @@ All tunables live in `livechat_mcp/config.py` and can be overridden via env vars
 
 | Var                          | Default                          | Notes                                                       |
 | ---------------------------- | -------------------------------- | ----------------------------------------------------------- |
-| `LIVECHAT_WHISPER_MODEL`     | `base.en`                        | `tiny.en`, `base.en`, `small.en`, `medium.en`               |
+| `LIVECHAT_WHISPER_MODEL`     | `base.en`                        | English-only: `tiny.en`, `base.en`, `small.en`, `medium.en`. Multilingual (drop `.en`): `tiny`, `base`, `small`, `medium` |
+| `LIVECHAT_WHISPER_LANGUAGE`  | `en`                             | Language code (`en`, `pt`, `es`, …) or `auto` to detect per utterance. `auto` requires a multilingual model |
 | `LIVECHAT_WHISPER_DEVICE`    | `auto`                           | `cpu`, `cuda`, `auto`                                       |
 | `LIVECHAT_WHISPER_COMPUTE`   | `int8`                           | `int8` (CPU), `float16` (GPU)                               |
 | `LIVECHAT_SILENCE_SEC`       | `1.5`                            | Silence after speech to end an utterance                    |
@@ -211,13 +256,13 @@ All tunables live in `livechat_mcp/config.py` and can be overridden via env vars
 | `LIVECHAT_END_PHRASE`        | `terminate voice session now`    | Spoken phrase to end the session                            |
 | `LIVECHAT_DEBUG`             | unset                            | Set to `1` for VAD/segmentation debug logs to stderr        |
 
-The easy way to set these is `livechat-skill set KEY VALUE` — it edits the
+The easy way to set these is `livechat-mcp set KEY VALUE` — it edits the
 `env` block in every host config it finds (Claude / Codex / Gemini).
 
 ```bash
-livechat-skill show           # print current env block(s)
-livechat-skill set LIVECHAT_SILENCE_SEC 1.5
-livechat-skill unset LIVECHAT_DEBUG
+livechat-mcp show           # print current env block(s)
+livechat-mcp set LIVECHAT_SILENCE_SEC 1.5
+livechat-mcp unset LIVECHAT_DEBUG
 ```
 
 Restart your assistant CLI after any change — MCP env vars are read by the
@@ -254,7 +299,7 @@ is noticeably slower on CPU (still real-time-ish) but much better for
 technical vocabulary.
 
 **Utterance ends too quickly / too slowly.**
-Tune `LIVECHAT_SILENCE_SEC` (or run `livechat-skill set LIVECHAT_SILENCE_SEC 1.5`).
+Tune `LIVECHAT_SILENCE_SEC` (or run `livechat-mcp set LIVECHAT_SILENCE_SEC 1.5`).
 1.0–4.5 is the useful range — lower feels snappier but risks cutting
 mid-thought pauses.
 

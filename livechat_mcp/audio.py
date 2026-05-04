@@ -7,6 +7,7 @@ shared SessionState queue and consumed by the MCP tool handler.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from collections import deque
@@ -15,6 +16,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from . import config
+from .lockfile import consume_release_request_for
 from .queue_manager import SessionState
 from .transcribe import Transcriber
 
@@ -156,7 +158,15 @@ class AudioPipeline:
                     flush=True,
                 )
 
+                my_pid = os.getpid()
                 while not self.state.shutdown_requested():
+                    # Cross-platform takeover signal: another livechat process
+                    # may have written a release-request marker for us. Poll
+                    # cheaply (a stat() call) on every loop iteration.
+                    if consume_release_request_for(my_pid):
+                        _debug("release requested by another process")
+                        self.state.request_shutdown()
+                        break
                     try:
                         frame = frame_q.get(timeout=0.2)
                     except _queue.Empty:

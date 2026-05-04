@@ -59,10 +59,15 @@ class Transcriber:
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
+        # "auto" or unset → pass None so Whisper auto-detects per utterance.
+        # Only works with multilingual models (e.g. "base" without .en suffix).
+        lang = config.WHISPER_LANGUAGE
+        language = None if not lang or lang.lower() == "auto" else lang
+
         try:
             segments, _info = self._model.transcribe(
                 audio,
-                language=config.WHISPER_LANGUAGE,
+                language=language,
                 vad_filter=False,  # we already segment via Silero VAD upstream
                 beam_size=1,  # speed > marginal accuracy for review speech
                 condition_on_previous_text=False,  # avoid hallucinated continuations

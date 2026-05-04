@@ -11,13 +11,15 @@ stdio transport. All logging to stderr; stdout is reserved for MCP protocol.
 from __future__ import annotations
 
 import asyncio
+import re
 import signal
 import sys
 import time
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import GetPromptResult, Prompt, PromptMessage, TextContent, Tool
 
 from . import config
 from .audio import AudioPipeline
@@ -28,6 +30,28 @@ from .transcribe import Transcriber
 
 def _log(msg: str) -> None:
     print(f"[livechat] {msg}", file=sys.stderr, flush=True)
+
+
+_PROMPT_DESCRIPTIONS = {
+    "livechat": "Start a live voice review session. Speak instead of typing.",
+    "endlivechat": "End the active live voice session and summarize.",
+}
+
+
+def _commands_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "commands"
+
+
+def _load_prompt_body(name: str) -> str:
+    if name not in _PROMPT_DESCRIPTIONS:
+        raise ValueError(f"Unknown prompt: {name}")
+
+    path = _commands_dir() / f"{name}.md"
+    text = path.read_text(encoding="utf-8")
+    match = re.match(r"^---\s*\n.*?\n---\s*\n(.*)$", text, re.DOTALL)
+    if match:
+        return match.group(1).lstrip("\n")
+    return text
 
 
 async def _run() -> None:
@@ -42,21 +66,48 @@ async def _run() -> None:
     # cross-process lock gate microphone capture.
 
     # SIGINT / SIGTERM → request shutdown so get_voice_input returns __END_SESSION__.
-    # SIGUSR1 → another livechat instance is asking us to release the lock.
+    # Cross-process takeover (formerly SIGUSR1) is now a file-marker mechanism
+    # handled in audio.py — works on all platforms including Windows.
     loop = asyncio.get_running_loop()
 
     def _on_signal(signame: str) -> None:
         _log(f"received {signame}, requesting shutdown")
         state.request_shutdown()
 
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _on_signal, sig.name)
+            loop.add_signal_handler(sig, _on_signal, signal.Signals(sig).name)
         except NotImplementedError:
-            # Windows fallback (no SIGUSR1 there either, but flock won't work either)
+            # Windows: asyncio's add_signal_handler is unsupported on the proactor
+            # loop. Plain signal.signal still wakes the event loop.
             signal.signal(sig, lambda *_: state.request_shutdown())
 
     server: Server = Server("livechat-mcp")
+
+    @server.list_prompts()
+    async def list_prompts() -> list[Prompt]:
+        return [
+            Prompt(
+                name=name,
+                title=name,
+                description=description,
+                arguments=[],
+            )
+            for name, description in _PROMPT_DESCRIPTIONS.items()
+        ]
+
+    @server.get_prompt()
+    async def get_prompt(name: str, arguments: dict | None) -> GetPromptResult:
+        del arguments
+        return GetPromptResult(
+            description=_PROMPT_DESCRIPTIONS.get(name),
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(type="text", text=_load_prompt_body(name)),
+                )
+            ],
+        )
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:

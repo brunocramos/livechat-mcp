@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# livechat-skill — install and configure the livechat MCP server for one or
+# livechat-mcp — install and configure the livechat MCP server for one or
 # more AI coding assistants.
 #
 # Supported hosts: Claude Code, Codex CLI, Gemini CLI.
@@ -38,15 +38,28 @@ GEMINI_CONFIG="${LIVECHAT_GEMINI_CONFIG:-$HOME/.gemini/settings.json}"
 
 CLAUDE_CMDS_DIR="$HOME/.claude/commands"
 CODEX_CMDS_DIR="$HOME/.codex/prompts"
+CODEX_SKILLS_DIR="$HOME/.codex/skills"
 GEMINI_CMDS_DIR="$HOME/.gemini/commands"
 
 SERVER_NAME="livechat"
+
+# python3 may not be on PATH on Windows (the python.org installer ships only
+# `python`). Find whichever exists; fall back if neither works.
+if command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+elif command -v python >/dev/null 2>&1; then
+  PY="python"
+else
+  echo "livechat-mcp: Python 3 not found. Install Python 3.10+ and try again." >&2
+  exit 1
+fi
 
 # --- knob descriptions ------------------------------------------------------
 
 KNOBS=(
   "LIVECHAT_SILENCE_SEC|How long you have to pause before what you said is sent. Lower = snappier; higher = more breathing room mid-thought.|1.5"
-  "LIVECHAT_WHISPER_MODEL|Speech-to-text model. Bigger is more accurate but slower. Options (small to large): tiny.en, base.en, small.en, medium.en.|base.en"
+  "LIVECHAT_WHISPER_MODEL|Speech-to-text model. Bigger is more accurate but slower. English-only: tiny.en, base.en, small.en, medium.en. Multilingual (drop the .en): tiny, base, small, medium.|base.en"
+  "LIVECHAT_WHISPER_LANGUAGE|Spoken language. Use 'en' for English-only (pairs with the default base.en model). Use 'auto' to let Whisper detect per utterance — requires a multilingual model (base, small, etc., without .en). Or force one with a code like 'pt', 'es', 'fr', 'de'.|en"
   "LIVECHAT_VAD_THRESHOLD|How clearly you have to speak before the mic decides 'this is speech, not noise'. 0.0-1.0. Lower picks up quiet talk but more background noise.|0.5"
   "LIVECHAT_MIN_UTTERANCE_SEC|Ignore anything shorter than this many seconds. Filters coughs and stray noises. Lower if quick yes/no replies get dropped.|0.4"
   "LIVECHAT_LONG_POLL_SEC|How long the server waits in silence for you to speak before pinging the assistant back. Rarely needs changing.|300"
@@ -66,9 +79,9 @@ err()   { printf "    %s %s\n" "$CROSS" "$1" >&2; }
 
 usage() {
   cat <<EOF
-${B}livechat-skill${R} — install and tune the livechat MCP server.
+${B}livechat-mcp${R} — install and tune the livechat MCP server.
 
-${B}Usage:${R} livechat-skill <command>
+${B}Usage:${R} livechat-mcp <command>
 
 ${B}Commands:${R}
   ${CYN}setup${R}              Interactive wizard: pick host(s), install, tune env vars
@@ -95,7 +108,7 @@ _py() {
   CODEX_CONFIG="$CODEX_CONFIG" \
   GEMINI_CONFIG="$GEMINI_CONFIG" \
   SERVER_NAME="$SERVER_NAME" \
-  python3 - "$@" <<'PY'
+  "$PY" - "$@" <<'PY'
 import json, os, re, sys
 
 CLAUDE_CONFIG = os.path.expanduser(os.environ["CLAUDE_CONFIG"])
@@ -118,7 +131,7 @@ def _json_save(path, cfg):
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
-    tmp = path + ".livechat-skill.tmp"
+    tmp = path + ".livechat-mcp.tmp"
     with open(tmp, "w") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
@@ -265,7 +278,7 @@ def _codex_save_text(text):
     d = os.path.dirname(CODEX_CONFIG)
     if d:
         os.makedirs(d, exist_ok=True)
-    tmp = CODEX_CONFIG + ".livechat-skill.tmp"
+    tmp = CODEX_CONFIG + ".livechat-mcp.tmp"
     with open(tmp, "w") as f:
         f.write(text)
     os.replace(tmp, CODEX_CONFIG)
@@ -353,6 +366,49 @@ def codex_unset_env(key):
     return True
 
 
+# ---------- uninstall (remove MCP entry only; bash side handles command files) ----------
+
+def claude_remove():
+    cfg = _json_load(CLAUDE_CONFIG)
+    if cfg is None:
+        return False
+    changed = False
+    if SERVER in (cfg.get("mcpServers") or {}):
+        del cfg["mcpServers"][SERVER]
+        changed = True
+    for proj in (cfg.get("projects") or {}).values():
+        if isinstance(proj, dict) and SERVER in (proj.get("mcpServers") or {}):
+            del proj["mcpServers"][SERVER]
+            changed = True
+    if changed:
+        _json_save(CLAUDE_CONFIG, cfg)
+    return changed
+
+
+def codex_remove():
+    text = _codex_load_text()
+    if not text:
+        return False
+    new_text = _codex_strip(text).rstrip()
+    if new_text == text.rstrip():
+        return False
+    if new_text:
+        new_text += "\n"
+    _codex_save_text(new_text)
+    return True
+
+
+def gemini_remove():
+    cfg = _json_load(GEMINI_CONFIG)
+    if cfg is None:
+        return False
+    if SERVER not in (cfg.get("mcpServers") or {}):
+        return False
+    del cfg["mcpServers"][SERVER]
+    _json_save(GEMINI_CONFIG, cfg)
+    return True
+
+
 # ---------- ops ----------
 
 def cmd_show():
@@ -387,8 +443,8 @@ def cmd_show():
             for k in sorted(env):
                 print(f"{k}={env[k]}")
     if not found:
-        sys.stderr.write("livechat-skill: no livechat MCP entry found in any host config.\n")
-        sys.stderr.write("Run 'livechat-skill setup' first.\n")
+        sys.stderr.write("livechat-mcp: no livechat MCP entry found in any host config.\n")
+        sys.stderr.write("Run 'livechat-mcp setup' first.\n")
         sys.exit(1)
 
 
@@ -397,8 +453,8 @@ def cmd_set(key, value):
     b = codex_set_env(key, value)
     c = gemini_set_env(key, value)
     if not (a or b or c):
-        sys.stderr.write("livechat-skill: no host config has a livechat entry. "
-                         "Run 'livechat-skill setup' first.\n")
+        sys.stderr.write("livechat-mcp: no host config has a livechat entry. "
+                         "Run 'livechat-mcp setup' first.\n")
         sys.exit(1)
 
 
@@ -442,6 +498,17 @@ def cmd_install(host, project_path):
         sys.stderr.write(f"unknown host: {host}\n"); sys.exit(2)
 
 
+def cmd_uninstall(host):
+    if host == "claude":
+        claude_remove()
+    elif host == "codex":
+        codex_remove()
+    elif host == "gemini":
+        gemini_remove()
+    else:
+        sys.stderr.write(f"unknown host: {host}\n"); sys.exit(2)
+
+
 def cmd_project_path():
     candidates = []
     for _, entry in claude_entries():
@@ -473,10 +540,12 @@ elif op == "check":
     cmd_check(sys.argv[2])
 elif op == "install":
     cmd_install(sys.argv[2], sys.argv[3])
+elif op == "uninstall":
+    cmd_uninstall(sys.argv[2])
 elif op == "project_path":
     cmd_project_path()
 else:
-    sys.stderr.write(f"livechat-skill: unknown internal op: {op}\n"); sys.exit(2)
+    sys.stderr.write(f"livechat-mcp: unknown internal op: {op}\n"); sys.exit(2)
 PY
 }
 
@@ -539,11 +608,24 @@ _install_md_commands() {
   cp "$src/endlivechat.md" "$dst/"
 }
 
+_install_codex_skill() {
+  # $1 = project path
+  local project_path="$1"
+  local src="$project_path/skills/livechat"
+  local dst="$CODEX_SKILLS_DIR/livechat"
+  if [ ! -f "$src/SKILL.md" ]; then
+    warn "Codex skill source missing at $src/SKILL.md"
+    return
+  fi
+  mkdir -p "$dst"
+  cp "$src/SKILL.md" "$dst/"
+}
+
 _install_gemini_commands() {
   # Convert .md (frontmatter + body) → Gemini's TOML custom-command format.
   local src="$1" dst="$2"
   mkdir -p "$dst"
-  python3 - "$src" "$dst" <<'PY'
+  "$PY" - "$src" "$dst" <<'PY'
 import os, re, sys
 src, dst = sys.argv[1], sys.argv[2]
 def convert(name):
@@ -582,7 +664,9 @@ _install_host() {
       ;;
     codex)
       _install_md_commands "$src" "$CODEX_CMDS_DIR"
-      ok "Slash commands → ${D}~/.codex/prompts/${R}"
+      ok "Legacy prompt files → ${D}~/.codex/prompts/${R}"
+      _install_codex_skill "$path"
+      ok "Codex skill → ${D}~/.codex/skills/livechat/${R}"
       _py install codex "$path"
       ok "MCP server → ${D}~/.codex/config.toml${R}"
       ;;
@@ -595,7 +679,34 @@ _install_host() {
   esac
 }
 
+_uninstall_host() {
+  local host="$1"
+  case "$host" in
+    claude)
+      rm -f "$CLAUDE_CMDS_DIR/livechat.md" "$CLAUDE_CMDS_DIR/endlivechat.md"
+      ok "Slash commands removed from ${D}~/.claude/commands/${R}"
+      _py uninstall claude
+      ok "MCP server removed from ${D}~/.claude.json${R}"
+      ;;
+    codex)
+      rm -f "$CODEX_CMDS_DIR/livechat.md" "$CODEX_CMDS_DIR/endlivechat.md"
+      ok "Prompt files removed from ${D}~/.codex/prompts/${R}"
+      rm -rf "$CODEX_SKILLS_DIR/livechat"
+      ok "Skill removed from ${D}~/.codex/skills/livechat/${R}"
+      _py uninstall codex
+      ok "MCP server removed from ${D}~/.codex/config.toml${R}"
+      ;;
+    gemini)
+      rm -f "$GEMINI_CMDS_DIR/livechat.toml" "$GEMINI_CMDS_DIR/endlivechat.toml"
+      ok "Slash commands removed from ${D}~/.gemini/commands/${R}"
+      _py uninstall gemini
+      ok "MCP server removed from ${D}~/.gemini/settings.json${R}"
+      ;;
+  esac
+}
+
 _print_host_row() {
+  # Numeric fallback row (used when TTY is unavailable or LIVECHAT_NO_TUI is set).
   local n="$1" name="$2" selected="$3" installed="$4" cli="$5"
   local mark
   if [ "$selected" = "true" ]; then mark="[${GREEN}x${R}]"; else mark="[ ]"; fi
@@ -608,6 +719,128 @@ _print_host_row() {
     hint="${D}CLI not detected${R}"
   fi
   printf "      %s ${CYN}%s)${R} %-13s %s\n" "$mark" "$n" "$name" "$hint"
+}
+
+_draw_tui_row() {
+  # idx, label, sel, installed, cli, current, label_width
+  local idx="$1" label="$2" sel="$3" installed="$4" cli="$5" current="$6" w="$7"
+  local mark cursor hint
+  if [ "$sel" = "true" ]; then mark="[${GREEN}x${R}]"; else mark="[ ]"; fi
+  if [ "$idx" = "$current" ]; then cursor="${CYN}❯${R} "; else cursor="  "; fi
+  if [ "$installed" = "true" ]; then
+    hint="${GREEN}already installed${R}"
+  elif [ "$cli" = "true" ]; then
+    hint="${D}CLI detected${R}"
+  else
+    hint="${D}CLI not detected${R}"
+  fi
+  printf "      %s%s %-${w}s %s\033[K\n" "$cursor" "$mark" "$label" "$hint"
+}
+
+_cursor_select_hosts() {
+  # Args:
+  #   $1..$3 = sel_claude  sel_codex  sel_gemini   (initial true/false)
+  #   $4..$6 = has_claude  has_codex  has_gemini   (already-installed)
+  #   $7..$9 = cli_claude  cli_codex  cli_gemini   (CLI detected)
+  # Output (globals): SEL_CLAUDE, SEL_CODEX, SEL_GEMINI
+  # Returns 0 on confirm, 1 on quit/abort.
+  local s0="$1" s1="$2" s2="$3"
+  local i0="$4" i1="$5" i2="$6"
+  local c0="$7" c1="$8" c2="$9"
+  local current=0
+  local n=3
+  local label_w=11
+
+  printf "      ${D}↑/↓ move · space toggle · a all/none · enter confirm · q quit${R}\n\n"
+
+  # Save the terminal mode so we can restore it on any exit path. Switch to
+  # non-canonical mode (each byte returned to read() immediately, no echo).
+  local _lc_stty_orig=""
+  _lc_stty_orig=$(stty -g < /dev/tty 2>/dev/null) || true
+
+  # Defined as a regular function so signal traps can call it cleanly.
+  _livechat_tui_restore() {
+    if [ -n "${_lc_stty_orig:-}" ]; then
+      stty "$_lc_stty_orig" < /dev/tty 2>/dev/null || true
+    fi
+    printf "\033[?25h"
+  }
+
+  # On Ctrl+C / SIGTERM, restore terminal and exit promptly. Without `exit` in
+  # the handler, bash 3.2 returns from the `read` and resumes the loop, making
+  # the menu uninterruptible.
+  trap '_livechat_tui_restore; exit 130' INT TERM
+  trap '_livechat_tui_restore' EXIT
+
+  stty -echo -icanon min 1 time 0 < /dev/tty 2>/dev/null || true
+  printf "\033[?25l"
+
+  _redraw() {
+    _draw_tui_row 0 "Claude Code" "$s0" "$i0" "$c0" "$current" "$label_w"
+    _draw_tui_row 1 "Codex CLI"   "$s1" "$i1" "$c1" "$current" "$label_w"
+    _draw_tui_row 2 "Gemini CLI"  "$s2" "$i2" "$c2" "$current" "$label_w"
+  }
+  _redraw
+
+  local key rest
+  while true; do
+    key=""
+    rest=""
+    if ! IFS= read -r -n 1 key < /dev/tty 2>/dev/null; then
+      break
+    fi
+
+    if [ "$key" = $'\e' ]; then
+      # Read the rest of the escape sequence. `-t 1` (integer second) works on
+      # both bash 3.2 and 5.x; real escape sequences arrive within microseconds,
+      # so the timeout only kicks in for bare-ESC presses.
+      IFS= read -r -n 2 -t 1 rest < /dev/tty 2>/dev/null || true
+      key="${key}${rest}"
+    fi
+
+    case "$key" in
+      $'\e[A'|$'\eOA')
+        current=$(( (current - 1 + n) % n ))
+        ;;
+      $'\e[B'|$'\eOB')
+        current=$(( (current + 1) % n ))
+        ;;
+      ' ')
+        case "$current" in
+          0) [ "$s0" = "true" ] && s0=false || s0=true ;;
+          1) [ "$s1" = "true" ] && s1=false || s1=true ;;
+          2) [ "$s2" = "true" ] && s2=false || s2=true ;;
+        esac
+        ;;
+      a|A)
+        if [ "$s0" = "true" ] && [ "$s1" = "true" ] && [ "$s2" = "true" ]; then
+          s0=false; s1=false; s2=false
+        else
+          s0=true; s1=true; s2=true
+        fi
+        ;;
+      "")
+        # Enter — `read -n 1` returns empty when the byte is a newline.
+        break
+        ;;
+      q|Q)
+        trap - INT TERM EXIT
+        _livechat_tui_restore
+        return 1
+        ;;
+    esac
+
+    printf "\033[${n}A"
+    _redraw
+  done
+
+  trap - INT TERM EXIT
+  _livechat_tui_restore
+
+  SEL_CLAUDE="$s0"
+  SEL_CODEX="$s1"
+  SEL_GEMINI="$s2"
+  return 0
 }
 
 # --- setup wizard -----------------------------------------------------------
@@ -641,67 +874,111 @@ cmd_setup() {
     default_gemini=$has_gemini_cli
   fi
 
-  _print_host_row 1 "Claude Code" "$default_claude" "$has_claude" "$has_claude_cli"
-  _print_host_row 2 "Codex CLI"   "$default_codex"  "$has_codex"  "$has_codex_cli"
-  _print_host_row 3 "Gemini CLI"  "$default_gemini" "$has_gemini" "$has_gemini_cli"
-  printf "\n"
-  printf "    ${D}Type numbers to toggle (e.g. ${R}${B}1 3${R}${D}), ${R}${B}a${R}${D} for all, ${R}${B}n${R}${D} for none,${R}\n"
-  printf "    ${D}or just press ${R}${B}Enter${R}${D} to accept the [x] selections above.${R}\n"
-  printf "\n"
-  printf "    %s " "$ARROW"
-  local selection
-  if ! IFS= read -r selection; then
-    echo; err "Aborted."; exit 1
+  local sel_claude sel_codex sel_gemini
+  if [ -t 1 ] && [ -e /dev/tty ] && [ -z "${LIVECHAT_NO_TUI:-}" ]; then
+    if _cursor_select_hosts \
+        "$default_claude" "$default_codex" "$default_gemini" \
+        "$has_claude" "$has_codex" "$has_gemini" \
+        "$has_claude_cli" "$has_codex_cli" "$has_gemini_cli"; then
+      sel_claude="$SEL_CLAUDE"
+      sel_codex="$SEL_CODEX"
+      sel_gemini="$SEL_GEMINI"
+    else
+      printf "\n"; err "Aborted."; exit 1
+    fi
+  else
+    # Numeric fallback for non-TTY environments.
+    _print_host_row 1 "Claude Code" "$default_claude" "$has_claude" "$has_claude_cli"
+    _print_host_row 2 "Codex CLI"   "$default_codex"  "$has_codex"  "$has_codex_cli"
+    _print_host_row 3 "Gemini CLI"  "$default_gemini" "$has_gemini" "$has_gemini_cli"
+    printf "\n"
+    printf "    ${D}Type numbers to toggle (e.g. ${R}${B}1 3${R}${D}), ${R}${B}a${R}${D} for all, ${R}${B}n${R}${D} for none,${R}\n"
+    printf "    ${D}or just press ${R}${B}Enter${R}${D} to accept the [x] selections above.${R}\n"
+    printf "\n"
+    printf "    %s " "$ARROW"
+    local selection
+    if ! IFS= read -r selection; then
+      echo; err "Aborted."; exit 1
+    fi
+
+    sel_claude=$default_claude
+    sel_codex=$default_codex
+    sel_gemini=$default_gemini
+    local trimmed
+    trimmed=$(echo "$selection" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    case "$trimmed" in
+      "")          ;; # keep defaults
+      a|all)       sel_claude=true; sel_codex=true; sel_gemini=true ;;
+      n|none)      sel_claude=false; sel_codex=false; sel_gemini=false ;;
+      *)
+        sel_claude=false; sel_codex=false; sel_gemini=false
+        for n in $selection; do
+          case "$n" in
+            1) sel_claude=true ;;
+            2) sel_codex=true ;;
+            3) sel_gemini=true ;;
+            *) warn "Ignoring unknown choice: $n" ;;
+          esac
+        done
+        ;;
+    esac
   fi
 
-  local sel_claude=$default_claude sel_codex=$default_codex sel_gemini=$default_gemini
-  local trimmed
-  trimmed=$(echo "$selection" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
-  case "$trimmed" in
-    "")          ;; # keep defaults
-    a|all)       sel_claude=true; sel_codex=true; sel_gemini=true ;;
-    n|none)      sel_claude=false; sel_codex=false; sel_gemini=false ;;
-    *)
-      sel_claude=false; sel_codex=false; sel_gemini=false
-      for n in $selection; do
-        case "$n" in
-          1) sel_claude=true ;;
-          2) sel_codex=true ;;
-          3) sel_gemini=true ;;
-          *) warn "Ignoring unknown choice: $n" ;;
-        esac
-      done
-      ;;
-  esac
+  # Anything selected? Anything deselected from a previous install?
+  local need_install=false need_uninstall=false
+  if [ "$sel_claude" = true ] || [ "$sel_codex" = true ] || [ "$sel_gemini" = true ]; then
+    need_install=true
+  fi
+  if { [ "$has_claude" = true ] && [ "$sel_claude" = false ]; } \
+     || { [ "$has_codex" = true ] && [ "$sel_codex" = false ]; } \
+     || { [ "$has_gemini" = true ] && [ "$sel_gemini" = false ]; }; then
+    need_uninstall=true
+  fi
 
-  if [ "$sel_claude" = false ] && [ "$sel_codex" = false ] && [ "$sel_gemini" = false ]; then
-    warn "No hosts selected — skipping install."
+  if [ "$need_install" = false ] && [ "$need_uninstall" = false ]; then
+    warn "Nothing to do — selections match current state."
   else
-    # === Step 2 — install ===
-    title "Step 2 of 3 — installing"
+    # === Step 2 — apply changes ===
+    title "Step 2 of 3 — applying changes"
 
-    local project_path
-    project_path="$(_resolve_project_path)"
-    info "Project path: ${B}${project_path}${R}"
-    if [ ! -f "$project_path/pyproject.toml" ]; then
-      err "No pyproject.toml at $project_path."
-      err "Re-run from the livechat-mcp project directory or set LIVECHAT_PROJECT_DIR."
-      exit 1
+    # Uninstall first so removals don't get re-clobbered if a host is being reinstalled.
+    if [ "$has_claude" = true ] && [ "$sel_claude" = false ]; then
+      printf "\n"; sub "Claude Code (removing)"
+      _uninstall_host claude
+    fi
+    if [ "$has_codex" = true ] && [ "$sel_codex" = false ]; then
+      printf "\n"; sub "Codex CLI (removing)"
+      _uninstall_host codex
+    fi
+    if [ "$has_gemini" = true ] && [ "$sel_gemini" = false ]; then
+      printf "\n"; sub "Gemini CLI (removing)"
+      _uninstall_host gemini
     fi
 
-    local cmds_src="$project_path/commands"
+    if [ "$need_install" = true ]; then
+      local project_path
+      project_path="$(_resolve_project_path)"
+      info "Project path: ${B}${project_path}${R}"
+      if [ ! -f "$project_path/pyproject.toml" ]; then
+        err "No pyproject.toml at $project_path."
+        err "Re-run from the livechat-mcp project directory or set LIVECHAT_PROJECT_DIR."
+        exit 1
+      fi
 
-    if [ "$sel_claude" = true ]; then
-      printf "\n"; sub "Claude Code"
-      _install_host claude "$project_path" "$cmds_src"
-    fi
-    if [ "$sel_codex" = true ]; then
-      printf "\n"; sub "Codex CLI"
-      _install_host codex "$project_path" "$cmds_src"
-    fi
-    if [ "$sel_gemini" = true ]; then
-      printf "\n"; sub "Gemini CLI"
-      _install_host gemini "$project_path" "$cmds_src"
+      local cmds_src="$project_path/commands"
+
+      if [ "$sel_claude" = true ]; then
+        printf "\n"; sub "Claude Code"
+        _install_host claude "$project_path" "$cmds_src"
+      fi
+      if [ "$sel_codex" = true ]; then
+        printf "\n"; sub "Codex CLI"
+        _install_host codex "$project_path" "$cmds_src"
+      fi
+      if [ "$sel_gemini" = true ]; then
+        printf "\n"; sub "Gemini CLI"
+        _install_host gemini "$project_path" "$cmds_src"
+      fi
     fi
   fi
 
@@ -743,7 +1020,20 @@ cmd_setup() {
   hr
   ok "All done. Restart your assistant CLI for changes to take effect."
   printf "\n"
-  printf "    ${B}Next:${R} open your assistant CLI and run ${CYN}/livechat${R}.\n\n"
+  printf "    ${B}Next:${R} open your assistant CLI and run the slash command:\n"
+  if [ "$sel_claude" = true ]; then
+    printf "      ${D}Claude Code  →${R} ${CYN}/livechat${R}\n"
+  fi
+  if [ "$sel_codex" = true ]; then
+    printf "      ${D}Codex CLI    →${R} ${CYN}use livechat${R}  ${D}(or ${CYN}/skills${D} → livechat)${R}\n"
+  fi
+  if [ "$sel_gemini" = true ]; then
+    printf "      ${D}Gemini CLI   →${R} ${CYN}/livechat${R}\n"
+  fi
+  if [ "$sel_codex" = true ]; then
+    printf "\n    ${YEL}!${R} Codex only loads skills and MCP servers at startup — quit and relaunch any open sessions.\n"
+  fi
+  printf "\n"
 }
 
 # --- entry point ------------------------------------------------------------
@@ -753,13 +1043,13 @@ case "$cmd" in
   setup)         cmd_setup ;;
   show|status)   cmd_show ;;
   set)
-    if [ $# -lt 3 ]; then echo "usage: livechat-skill set KEY VALUE" >&2; exit 2; fi
+    if [ $# -lt 3 ]; then echo "usage: livechat-mcp set KEY VALUE" >&2; exit 2; fi
     cmd_set "$2" "$3" ;;
   unset|remove)
-    if [ $# -lt 2 ]; then echo "usage: livechat-skill unset KEY" >&2; exit 2; fi
+    if [ $# -lt 2 ]; then echo "usage: livechat-mcp unset KEY" >&2; exit 2; fi
     cmd_unset "$2" ;;
   get)
-    if [ $# -lt 2 ]; then echo "usage: livechat-skill get KEY" >&2; exit 2; fi
+    if [ $# -lt 2 ]; then echo "usage: livechat-mcp get KEY" >&2; exit 2; fi
     cmd_get "$2" ;;
   help|-h|--help) usage ;;
   *) usage; exit 2 ;;

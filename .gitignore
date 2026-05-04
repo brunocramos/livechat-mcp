@@ -7,6 +7,9 @@ __pycache__/
 build/
 dist/
 .eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # uv / venv
 .venv/
@@ -20,6 +23,9 @@ models/
 # Editor / OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
 .vscode/
 .idea/
 *.swp
