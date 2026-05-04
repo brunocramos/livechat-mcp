@@ -16,7 +16,20 @@ This is non-negotiable:
 - Do NOT skip it, paraphrase it inside a tool result, or hide it inside reasoning.
 - The user has **no other indicator** that the mic is hot. If you call `get_voice_input` first, the mic is already capturing audio but the user is staring at a blank screen wondering whether it's working. They will start a conversation that they can't tell you've heard.
 
-So: emit the literal line `Listening — go ahead.` first, then proceed to the loop below.
+So: emit the literal line `Listening — go ahead.` first, then proceed to STEP 1.
+
+## STEP 1 — clear stale state once, before the loop
+
+Right after the announcement and BEFORE the first `get_voice_input`, call the
+`reset_voice_session` MCP tool exactly once. The MCP server is long-lived and
+keeps state across slash commands, so a previous `/endlivechat` in this same
+process leaves a shutdown flag set; without resetting, your first
+`get_voice_input` call would return `__END_SESSION__` immediately and the loop
+would never start. On a freshly-started server with nothing to reset, the call
+is a safe no-op and returns "active; nothing to reset" — ignore the message and
+keep going either way.
+
+Do NOT call `reset_voice_session` again inside the loop.
 
 ## The loop
 
@@ -35,4 +48,4 @@ So: emit the literal line `Listening — go ahead.` first, then proceed to the l
 
 Keep your spoken-context responses tight: the user is reviewing code or otherwise actively engaged, so prefer making the requested change over long explanations. If something is ambiguous, make a reasonable choice and note it briefly rather than blocking on a clarifying question — the user will just tell you to redo it.
 
-Begin: print `Listening — go ahead.` now, then call `get_voice_input`.
+Begin: print `Listening — go ahead.` now, then call `reset_voice_session` once, then call `get_voice_input` to enter the loop.

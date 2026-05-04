@@ -96,8 +96,25 @@ async def _run() -> None:
             for name, description in _PROMPT_DESCRIPTIONS.items()
         ]
 
+    def _reset_if_idle() -> bool:
+        """Reset state IF there's no healthy session running.
+
+        - Pipeline alive AND no shutdown pending → healthy session, no-op
+          (we must not drop in-flight utterances or kick the audio thread).
+        - Otherwise (pipeline dead, or shutdown was requested by /endlivechat)
+          → clear shutdown flag and queue so a fresh session can start.
+
+        Returns True if a reset was performed, False if it was a no-op.
+        """
+        if state.shutdown_requested() or not pipeline.is_alive():
+            state.reset_for_new_session()
+            return True
+        return False
+
     @server.get_prompt()
     async def get_prompt(name: str, arguments: dict | None) -> GetPromptResult:
+        if name == "livechat" and _reset_if_idle():
+            _log("livechat prompt requested; cleared stale state")
         del arguments
         return GetPromptResult(
             description=_PROMPT_DESCRIPTIONS.get(name),
@@ -151,6 +168,19 @@ async def _run() -> None:
                 ),
                 inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
             ),
+            Tool(
+                name="reset_voice_session",
+                description=(
+                    "Clear stale shutdown state from a previous /endlivechat in "
+                    "this same MCP server process so a new voice session can "
+                    "start cleanly. Call this once at the very beginning of a "
+                    "/livechat session, after the announcement and before the "
+                    "first get_voice_input. Safe to call mid-session: if a "
+                    "session is already running healthily this is a no-op and "
+                    "no in-flight utterances are dropped."
+                ),
+                inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
         ]
 
     call_seq = {"n": 0}
@@ -171,6 +201,15 @@ async def _run() -> None:
             state.request_shutdown()
             _log(f"tool call #{n} ← {name} (shutdown requested)")
             return [TextContent(type="text", text="Voice session ended.")]
+        if name == "reset_voice_session":
+            did_reset = _reset_if_idle()
+            msg = (
+                "Voice session reset; ready for a new session."
+                if did_reset
+                else "Voice session is active; nothing to reset."
+            )
+            _log(f"tool call #{n} ← {name} ({'reset' if did_reset else 'no-op'})")
+            return [TextContent(type="text", text=msg)]
         if name == "take_over_voice_session":
             result = await _take_over(state, pipeline, lock)
             _log(f"tool call #{n} ← {name} {result!r}")
@@ -192,22 +231,18 @@ async def _get_voice_input(
     state: SessionState, pipeline: AudioPipeline, lock: SessionLock
 ) -> str:
     """Drain queued utterances or long-poll for a new one."""
+    if state.shutdown_requested():
+        return config.SENTINEL_END_SESSION
+
     # If no audio thread is running, this is either the first call ever or the
-    # first call after a previous /endlivechat. Either way, try to acquire the
-    # cross-process lock and start (or restart) the pipeline. If another
-    # livechat process holds the lock, surface that to the caller.
+    # first call after a previous /endlivechat.
     if not pipeline.is_alive():
-        if state.shutdown_requested():
-            state.reset_for_new_session()
         holder = lock.try_acquire()
         if holder is not None:
             _log(f"session lock held by PID {holder}; refusing to start audio")
             return f"{config.SENTINEL_ALREADY_RUNNING}:{holder}"
         _log("starting new session: audio pipeline up")
         pipeline.start()
-
-    if state.shutdown_requested():
-        return config.SENTINEL_END_SESSION
 
     # Drain any queued utterances first (non-blocking).
     drained = state.drain_utterances()
@@ -229,8 +264,6 @@ async def _get_voice_input(
         await asyncio.sleep(interval)
         deadline_left -= interval
 
-    if state.shutdown_requested():
-        return config.SENTINEL_END_SESSION
     return config.SENTINEL_NO_INPUT
 
 

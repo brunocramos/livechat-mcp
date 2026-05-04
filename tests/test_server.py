@@ -173,12 +173,25 @@ async def test_get_voice_input_returns_already_running_when_lock_held():
     assert pipeline.start_count == 0
 
 
-async def test_get_voice_input_resets_state_after_previous_session_ended(monkeypatch):
-    """If the previous /endlivechat left shutdown_requested set, calling the tool
-    again on a non-alive pipeline should reset and re-start, not loop on END."""
+async def test_get_voice_input_returns_end_if_shutdown_requested(monkeypatch):
+    """If shutdown_requested is set, calling the tool should return END immediately."""
     state = SessionState()
-    state.push_utterance("stale")  # left over from previous session
     state.request_shutdown()
+
+    pipeline = FakePipeline(alive=False)
+    lock = FakeLock(holder=None)
+
+    out = await server._get_voice_input(state, pipeline, lock)
+
+    assert out == config.SENTINEL_END_SESSION
+    assert pipeline.start_count == 0
+
+
+async def test_get_voice_input_after_reset(monkeypatch):
+    """After a reset, get_voice_input should start a fresh session."""
+    state = SessionState()
+    state.request_shutdown()
+    state.reset_for_new_session()
 
     pipeline = FakePipeline(alive=False)
     lock = FakeLock(holder=None)
@@ -188,9 +201,65 @@ async def test_get_voice_input_resets_state_after_previous_session_ended(monkeyp
 
     out = await server._get_voice_input(state, pipeline, lock)
 
-    # Stale utterance was cleared, fresh pipeline started, long-poll timed out.
     assert out == config.SENTINEL_NO_INPUT
     assert pipeline.start_count == 1
+    assert not state.shutdown_requested()
+
+
+# -----------------------------------------------------------------------------
+# Gated reset (the predicate behind reset_voice_session and the get_prompt
+# auto-reset). Lives behind a closure inside _run, so we re-implement the same
+# logic here and assert the matrix of cases.
+# -----------------------------------------------------------------------------
+
+
+def _reset_if_idle(state, pipeline) -> bool:
+    if state.shutdown_requested() or not pipeline.is_alive():
+        state.reset_for_new_session()
+        return True
+    return False
+
+
+def test_reset_if_idle_resets_after_endlivechat():
+    state = SessionState()
+    state.push_utterance("stale")
+    state.request_shutdown()
+    pipeline = FakePipeline(alive=False)
+
+    assert _reset_if_idle(state, pipeline) is True
+    assert not state.shutdown_requested()
+    assert state.drain_utterances() == []
+
+
+def test_reset_if_idle_resets_when_pipeline_never_started():
+    """First-ever /livechat: pipeline dead, no shutdown set. Still 'resets'
+    (idempotent) so the predicate has consistent semantics."""
+    state = SessionState()
+    pipeline = FakePipeline(alive=False)
+
+    assert _reset_if_idle(state, pipeline) is True
+
+
+def test_reset_if_idle_is_noop_during_active_session():
+    """Mid-session /livechat or stray reset_voice_session: do not drop the
+    queue or perturb the running pipeline."""
+    state = SessionState()
+    state.push_utterance("in-flight")
+    pipeline = FakePipeline(alive=True)
+
+    assert _reset_if_idle(state, pipeline) is False
+    assert state.drain_utterances() == ["in-flight"]
+
+
+def test_reset_if_idle_resets_during_shutdown_in_progress():
+    """Race window: shutdown was requested but the audio thread hasn't
+    exited yet. Clear shutdown anyway so a follow-up /livechat does not
+    immediately return END_SESSION."""
+    state = SessionState()
+    state.request_shutdown()
+    pipeline = FakePipeline(alive=True)  # mid-shutdown
+
+    assert _reset_if_idle(state, pipeline) is True
     assert not state.shutdown_requested()
 
 

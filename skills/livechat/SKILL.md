@@ -15,13 +15,18 @@ Use the `livechat` MCP tools to run a continuous voice session.
 
    `Listening — go ahead.`
 
-2. Call `get_voice_input`.
-3. For real speech, echo the transcription before acting:
+2. Call `reset_voice_session` **once**, right after the announcement and before
+   the first `get_voice_input`. The MCP server is long-lived; this clears any
+   stale shutdown flag from a prior `/endlivechat` in the same process so the
+   new session starts cleanly. On a fresh server it's a safe no-op. Do NOT
+   call `reset_voice_session` again during the loop.
+3. Call `get_voice_input`.
+4. For real speech, echo the transcription before acting:
 
    `> "<exact text returned by get_voice_input>"`
 
-4. Treat the transcription as the user's next request. Act on it normally.
-5. After completing each request, immediately call `get_voice_input` again.
+5. Treat the transcription as the user's next request. Act on it normally.
+6. After completing each request, immediately call `get_voice_input` again to continue the loop.
 
 ## Tool Results
 
@@ -31,6 +36,6 @@ Use the `livechat` MCP tools to run a continuous voice session.
 
 ## End
 
-When the user asks to end livechat or stop voice mode, call `end_voice_session`, then summarize what was accomplished.
+When the user asks to end livechat or stop voice mode, call `end_voice_session`. After calling this tool, **do not call `get_voice_input` again**. Instead, stop the loop and summarize what was accomplished.
 
 Keep responses concise during voice mode. The user is actively speaking and expects the loop to continue until the session ends.
