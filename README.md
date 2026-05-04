@@ -6,6 +6,22 @@ transcribed locally with Whisper, and each utterance is delivered to the
 assistant as if you'd typed it. No tab switching, no copy/paste, no batch
 recording.
 
+A few things people use it for:
+
+- **Live-reviewing a vibe-coded feature.** Walk through the diff and narrate
+  fixes as you spot them — the assistant edits in place while you keep
+  reading.
+- **Stream-of-consciousness debugging.** Speak your hypotheses out loud as
+  you investigate; the assistant tries them, reports back, you keep moving.
+- **Hands-free note-taking with project context.** "Add a TODO that the auth
+  middleware needs a rate-limit step", said while looking at the file —
+  lands as a real comment in the right spot.
+- **Pair-programming while you're not at the keyboard.** Eating, on a walk
+  with AirPods, sketching on paper — keep the conversation going.
+- **Onboarding a new repo.** Talk through what you're seeing as you read;
+  the assistant answers questions and pulls up related code without you
+  losing your place.
+
 Works with any MCP host. First-class support for:
 
 - **Claude Code**
@@ -25,13 +41,15 @@ Works with any MCP host. First-class support for:
 
 One command — no clone needed.
 
+**macOS / Linux / Git Bash on Windows:**
+
 ```bash
-# macOS / Linux / Git Bash on Windows
 curl -LsSf https://raw.githubusercontent.com/brunocramos/livechat-mcp/main/bootstrap.sh | bash
 ```
 
+**Native Windows PowerShell:**
+
 ```powershell
-# Native Windows PowerShell
 irm https://raw.githubusercontent.com/brunocramos/livechat-mcp/main/bootstrap.ps1 | iex
 ```
 
@@ -43,6 +61,12 @@ wizard into `~/.local/bin`, and launches the interactive setup wizard.
 
 If you've already cloned the repo manually, run `./install.sh` (or
 `.\install.ps1`) directly and skip the curl step.
+
+> **One-time microphone prompt.** The first time you run `/livechat`, your
+> OS will ask your terminal app for mic access (macOS: a System Settings
+> dialog; Windows: the Privacy & Security panel; Linux: usually nothing if
+> your user is in the `audio` group). Grant it once and it just works from
+> there on — every subsequent session is hot the moment you say go.
 
 > **Windows**: native locking uses `msvcrt` and takeover signaling is
 > file-based, so no `fcntl` dependency. The interactive wizard is a bash
