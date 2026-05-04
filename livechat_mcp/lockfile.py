@@ -3,18 +3,24 @@ takeover signal.
 
 Two MCP server processes (e.g. two Claude Code windows) both opening the mic
 produces garbage on both sides. We acquire an OS-level lock on a well-known
-path while a session is active, and write our PID inside so the other process
-can name the holder when reporting the conflict.
+path while a session is active, and write our PID to a separate file so the
+other process can name the holder when reporting the conflict.
 
 Locking dispatches by platform:
 - POSIX (macOS, Linux): `fcntl.flock` — auto-released when the holding fd
   closes, including on process crash.
 - Windows: `msvcrt.locking` — same semantics; the OS releases on handle close.
 
-Takeover signaling is file-based on every platform (no SIGUSR1) so it works on
-Windows too. The taker writes the holder's PID into a "release request" marker
-file; the holder polls the marker on every audio frame and shuts down when it
-sees its own PID.
+The PID is intentionally stored in a SEPARATE file (`session.pid`), not in
+the lock file. Windows' `msvcrt.locking` is mandatory byte-range locking and
+also blocks reads on the locked region; if the holder's PID lived inside the
+lock file, no other process could read it. Splitting the two files keeps the
+PID freely readable on every platform.
+
+Takeover signaling is also file-based on every platform (no SIGUSR1) so it
+works on Windows too. The taker writes the holder's PID into a "release
+request" marker file; the holder polls the marker on every audio frame and
+shuts down when it sees its own PID.
 """
 
 from __future__ import annotations
@@ -26,12 +32,6 @@ from pathlib import Path
 from typing import Optional
 
 _IS_WINDOWS = sys.platform == "win32"
-
-# On Windows, msvcrt.locking is a *mandatory* byte-range lock — it blocks
-# reads on the locked byte as well as writes. We lock at a sentinel offset
-# well past where we ever write the PID so other processes can still read
-# the PID at offset 0.
-_WIN_LOCK_OFFSET = 1024
 
 if _IS_WINDOWS:
     import msvcrt
@@ -45,12 +45,12 @@ def _try_lock_fd(fd: int) -> bool:
     """Non-blocking exclusive lock on `fd`. Returns True on acquire, False on conflict."""
     if _IS_WINDOWS:
         try:
-            os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
+            os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
         except OSError:
-            # Either the lock is held by another fd or the OS refused for
-            # another reason. Treat as conflict; caller decides how to react.
+            # Either the lock is held by another fd or the OS refused for some
+            # other reason. Treat as conflict; nothing else we can do.
             return False
     else:
         try:
@@ -65,7 +65,7 @@ def _try_lock_fd(fd: int) -> bool:
 def _unlock_fd(fd: int) -> None:
     if _IS_WINDOWS:
         try:
-            os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
+            os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         except OSError:
             pass
@@ -80,12 +80,10 @@ def _unlock_fd(fd: int) -> None:
 
 def _runtime_base() -> Path:
     """Pick a writable per-user runtime directory across platforms."""
-    # Honor XDG_RUNTIME_DIR if set (Linux convention; respected by tests too).
     xdg = os.environ.get("XDG_RUNTIME_DIR")
     if xdg:
         return Path(xdg)
     if _IS_WINDOWS:
-        # %LOCALAPPDATA% is the canonical per-user, machine-local cache root.
         local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if local:
             return Path(local)
@@ -103,6 +101,10 @@ def _lock_path() -> Path:
     return _lock_dir() / "session.lock"
 
 
+def _pid_path() -> Path:
+    return _lock_dir() / "session.pid"
+
+
 def _release_marker_path() -> Path:
     return _lock_dir() / "release.req"
 
@@ -115,6 +117,7 @@ class SessionLock:
     def __init__(self) -> None:
         self._fd: Optional[int] = None
         self._path = _lock_path()
+        self._pid_file = _pid_path()
 
     def try_acquire(self) -> Optional[int]:
         """Attempt to acquire the lock.
@@ -126,25 +129,28 @@ class SessionLock:
             return None
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
+            # Windows requires the file to have at least 1 byte before the
+            # byte-range lock will succeed. POSIX doesn't care.
+            if _IS_WINDOWS:
+                try:
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b"\0")
+                        os.lseek(fd, 0, os.SEEK_SET)
+                except OSError:
+                    pass
             acquired = _try_lock_fd(fd)
         except OSError:
             os.close(fd)
             raise
 
         if not acquired:
-            holder = _read_pid(self._path)
+            holder = _read_pid(self._pid_file)
             os.close(fd)
             return holder if holder > 0 else -1
 
-        # Write our PID at offset 0 so other processes can identify us on conflict.
-        # Truncating may fail on Windows while the lock is held in some configs;
-        # ignore that and overwrite — _read_pid only reads the first line.
-        try:
-            os.ftruncate(fd, 0)
-        except OSError:
-            pass
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, f"{os.getpid()}\n".encode())
+        # Acquired. Publish our PID to the (separate, unlocked) PID file so
+        # other processes can name us on conflict.
+        _write_pid(self._pid_file, os.getpid())
         self._fd = fd
         return None
 
@@ -157,20 +163,33 @@ class SessionLock:
             os.close(fd)
         except OSError:
             pass
+        # Best-effort: clear the PID file so a future read can't see a stale
+        # holder. The lock itself is already released; this is just hygiene.
+        try:
+            self._pid_file.unlink()
+        except OSError:
+            pass
 
     def held(self) -> bool:
         return self._fd is not None
 
 
+def _write_pid(path: Path, pid: int) -> None:
+    try:
+        path.write_text(f"{pid}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _read_pid(path: Path) -> int:
     try:
-        with open(path) as f:
-            # Only the first line — when ftruncate is rejected (Windows can
-            # refuse it under an active lock), the file may still contain
-            # bytes from a previous holder past our newly written PID.
-            first = f.readline().strip()
-        return int(first or 0)
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    line = text.splitlines()[0] if text else ""
+    try:
+        return int(line.strip() or 0)
+    except ValueError:
         return 0
 
 

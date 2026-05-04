@@ -23,22 +23,26 @@ Works with any MCP host. First-class support for:
 
 ## Quick install (recommended)
 
-From a clone of the repo:
+One command — no clone needed.
 
 ```bash
 # macOS / Linux / Git Bash on Windows
-./install.sh
+curl -LsSf https://raw.githubusercontent.com/brunocramos/livechat-mcp/main/bootstrap.sh | bash
 ```
 
 ```powershell
 # Native Windows PowerShell
-.\install.ps1
+irm https://raw.githubusercontent.com/brunocramos/livechat-mcp/main/bootstrap.ps1 | iex
 ```
 
-The bootstrap detects the OS, installs portaudio if needed (brew / apt / dnf /
-pacman / zypper — Windows wheels ship it bundled), installs `uv` if missing,
-runs `uv sync`, drops the wizard into `~/.local/bin`, and launches the
-interactive setup wizard.
+The bootstrap clones the repo to `~/.local/share/livechat-mcp` (override
+with `$LIVECHAT_INSTALL_DIR`) and runs `install.sh` / `install.ps1`, which
+installs portaudio if needed (brew / apt / dnf / pacman / zypper — Windows
+wheels ship it bundled), installs `uv` if missing, runs `uv sync`, drops the
+wizard into `~/.local/bin`, and launches the interactive setup wizard.
+
+If you've already cloned the repo manually, run `./install.sh` (or
+`.\install.ps1`) directly and skip the curl step.
 
 > **Windows**: native locking uses `msvcrt` and takeover signaling is
 > file-based, so no `fcntl` dependency. The interactive wizard is a bash

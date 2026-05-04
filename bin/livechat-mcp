@@ -897,7 +897,7 @@ cmd_setup() {
     printf "\n"
     printf "    %s " "$ARROW"
     local selection
-    if ! IFS= read -r selection; then
+    if ! IFS= read -r selection < /dev/tty; then
       echo; err "Aborted."; exit 1
     fi
 
@@ -999,7 +999,7 @@ cmd_setup() {
       printf "      default: ${D}%s${R}\n" "${default:-<unset>}"
     fi
     printf "      %s " "$ARROW"
-    if ! IFS= read -r new; then
+    if ! IFS= read -r new < /dev/tty; then
       echo; err "Aborted."; exit 1
     fi
     if [ -z "$new" ]; then

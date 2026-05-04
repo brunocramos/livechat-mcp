@@ -50,9 +50,20 @@ def test_release_lets_other_acquire(isolated_lock_dir):
 def test_pid_file_contains_holder_pid(isolated_lock_dir):
     lock = SessionLock()
     assert lock.try_acquire() is None
-    pid_file = isolated_lock_dir / "livechat-mcp" / "session.lock"
+    # PID lives in a SEPARATE file from the lock so other processes can read it
+    # without contending with the byte-range lock (mandatory on Windows).
+    pid_file = isolated_lock_dir / "livechat-mcp" / "session.pid"
     assert pid_file.read_text().strip() == str(os.getpid())
     lock.release()
+
+
+def test_release_clears_pid_file(isolated_lock_dir):
+    lock = SessionLock()
+    assert lock.try_acquire() is None
+    pid_file = isolated_lock_dir / "livechat-mcp" / "session.pid"
+    assert pid_file.exists()
+    lock.release()
+    assert not pid_file.exists()
 
 
 def test_release_is_safe_when_unheld(isolated_lock_dir):
