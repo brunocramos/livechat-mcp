@@ -13,7 +13,7 @@ Code about a weather dashboard, no typing involved. Recorded with my own
 (non-native English) accent, to show transcription holds up across
 speakers.
 
-**[Watch the demo (~6 min)](https://youtu.be/fOa0IQU82DA)**
+[![livechat-mcp demo video](https://img.youtube.com/vi/fOa0IQU82DA/maxresdefault.jpg)](https://youtu.be/fOa0IQU82DA)
 
 A few things people use it for:
 
@@ -38,6 +38,10 @@ Works with any MCP host. First-class support for:
 - **Gemini CLI**
 
 ## Requirements
+
+> **Tested on macOS only so far.** Linux and Windows are wired up in
+> code (install scripts, mic-permission notes, locking primitives) but
+> haven't been independently verified yet — bug reports welcome.
 
 - **macOS**, **Linux**, or **Windows** (native via PowerShell, or under WSL2 / Git Bash).
 - Python 3.10+
