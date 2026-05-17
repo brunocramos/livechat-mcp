@@ -6,6 +6,15 @@ transcribed locally with Whisper, and each utterance is delivered to the
 assistant as if you'd typed it. No tab switching, no copy/paste, no batch
 recording.
 
+## Demo
+
+A short walkthrough of a live voice review session — talking to Claude
+Code about a weather dashboard, no typing involved. Recorded with my own
+(non-native English) accent, to show transcription holds up across
+speakers.
+
+**[Watch the demo (~6 min)](https://youtu.be/fOa0IQU82DA)**
+
 A few things people use it for:
 
 - **Live-reviewing a vibe-coded feature.** Walk through the diff and narrate
